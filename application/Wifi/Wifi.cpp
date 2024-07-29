@@ -1,5 +1,6 @@
 #include "Wifi.h"
 #include <esp_mac.h>
+#include <esp_log.h>
 
 namespace WIFI
 {
@@ -8,9 +9,76 @@ char Wifi::mac_addr_cstr[]{};
 
 //std::atomic_bool Wifi::first_call {false};
 
-std::mutex Wifi::first_call_mutex;
+SemaphoreHandle_t Wifi::first_call_mutex {nullptr};
+StaticSemaphore_t Wifi::first_call_mutex_buffer {};// default constructor, chunk of memory statically allocated at compile time
 
-bool Wifi::first_call {false};
+bool Wifi::first_call {true};
+
+Wifi::Wifi()
+{
+    if (!first_call_mutex) { // if the mutext doesn't exist, create it
+        //first_call_mutex = xSemaphoreCreateMutex(); // originally this mutex is on the heap memory, the semaphore is in a take state state
+        first_call_mutex = xSemaphoreCreateRecursiveMutexStatic(&first_call_mutex_buffer);// a recursive mutex ensures the following:
+        // ChildOfWifi
+        // {
+
+            // ...
+            // xSemaphoreTake(first_call_mutx,pDsecond);// child class of wifi took the semaphore
+            // Wifi(); // inside here, if it is the first call, the thread will try to acquire the semaphore, but it is already taken by itself, so it's gonna take
+            // it again (it's behaving like a counter semaphore with 2 permits), but when it will give it back, it should give it the number of times it took it
+            // so 2. if this wasn't a recursive semaphore, it wouldn't do that. it will block inside the base class constructor because we need the semaphore but we can't take
+            // it again bc we already have it.
+            // xSemaphoreGive(first_call_mutx);
+        
+        
+        
+        
+        
+        //}
+        configASSERT(first_call_mutex);
+        // if the thing inside ths assert is evaluated to false, espressif calls abort, but it gives you a trace on which line the problem happened
+        // first_call_mutex != nullptr (that's what the above means)
+
+        configASSERT(pdPASS == xSemaphoreGive(first_call_mutex));
+    }
+
+    // There is a bug here, if it's our first call, and for some reason we can't obtain the semaphore, then we exit the function first without turning
+    // the first_call to false, and we don;t get any mac address. Depending on the number of times this constructor is executed, we may get different behaviors,
+    // and what the variable is  claiming to be first-call might not be!
+    // if (first_call && pdPASS == xSemaphoreTake(first_call_mutex,pdSECOND)) {
+    //     if (ESP_OK != _get_mac()) {
+    //         esp_restart(); // reboot the chip
+    //     }
+    //     first_call = false;
+    //     xSemaphoreGive(first_call_mutex);
+    // }
+
+    bool it_worked {false};
+    for (int i = 0; i<3 ; i++) { // max 3 times to acquire the semaphore
+        if (pdPASS == xSemaphoreTake(first_call_mutex,pdSECOND)) {
+            if (first_call) {
+                if (ESP_OK != _get_mac()) {
+                    esp_restart();
+                }
+                first_call = false;
+            }
+            xSemaphoreGive(first_call_mutex);
+            it_worked = true;
+            break;
+        } else {
+            // esp_restart();
+            ESP_LOGW("WIFI","Failed to get mutex (attempt %u)",i+1);
+            continue;
+        }
+    }
+
+    if (!it_worked){
+        esp_restart();
+    }
+        
+}
+
+
 /* get_mac() is a method that uses the Espressif IDF to get the mac address of the chip
 */
 esp_err_t Wifi::_get_mac()

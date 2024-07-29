@@ -1,8 +1,10 @@
 #pragma once
 
 #include "esp_wifi.h"
-//#include <atomic>
-#include <mutex>
+
+#include "freertos/semphr.h"
+
+#define pdSECOND pdMS_TO_TICKS(1000)
 
 namespace WIFI
 {
@@ -25,27 +27,7 @@ public:
         ERROR
     };
 
-    Wifi()
-    {
-        //static esp_err_t val = _get_mac(); // static is heavy in term of computations
-        // static bool first_call = false;
-
-        // May get problematic when you have multi threads, because if running in parallel, they may both have first_call initialized to false, then they will both 
-        // execute the code block inside, meaning the code block would be executed twice. it's a critical section so just one thread should be doing it at a time.
-
-        // first acquire the lock
-        std::lock_guard<std::mutex> guard(first_call_mutex); // scope based lock. Lock is released when we go out of scope
-        // only one thread will run this part
-        if (!first_call) {
-            if (ESP_OK != _get_mac()) {
-                esp_restart(); // reboot the chip
-            }
-            first_call = true;
-        }
-        //if (ESP_OK != _get_mac()) esp_restart();
-        // abort() and esp_restart() reboots the processor
-        // we can also use std::call_once
-    }
+    Wifi();
     esp_err_t init(void); // set everything up
     esp_err_t begin(void); // start wifi, connect,etc
 
@@ -53,16 +35,23 @@ public:
     const char* get_mac() 
         {return mac_addr_cstr;}
 
+protected:
+    static SemaphoreHandle_t first_call_mutex;
+
+
+
 private:
     void state_machine(void);// internal machine
 
     static char mac_addr_cstr[13];// all instances of this class share the same mac address.
-    esp_err_t _get_mac(void); // the user should call this function directly
+    esp_err_t _get_mac(void); // the user should NOT call this function directly
 
     //static std::atomic_bool first_call; // std::atomic_bool means the boolean is atomic, meaning if a thread wants to change its value, it should first 
     // get a lock, that's ensure that the critical section above is well protected.
 
-    static std::mutex first_call_mutex;
+    //static SemaphoreHandle_t first_call_mutex; // pointer to the mutex or handle as free rtos calls it, memory getting allocated at runTime because it's on the 
+    //heap memory
+    static StaticSemaphore_t first_call_mutex_buffer;
     static bool first_call;
 
 };
