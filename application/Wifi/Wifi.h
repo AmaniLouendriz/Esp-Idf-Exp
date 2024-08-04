@@ -4,6 +4,15 @@
 
 #include "freertos/semphr.h"
 
+#include <mutex>
+
+#include <cstring>
+#include <algorithm>
+
+// setting up a wifi station, from documentation
+#include "esp_event.h"
+#include "esp_log.h"
+
 #define pdSECOND pdMS_TO_TICKS(1000)
 
 namespace WIFI
@@ -11,6 +20,8 @@ namespace WIFI
 
 class Wifi
 {
+    constexpr static const char* ssid {"MyWifiSsid"};
+    constexpr static const char* password{"MyWifiPassword"};
 public:
 
     enum class state_e
@@ -18,7 +29,6 @@ public:
 
         NOT_INITIALISED,
         INITIALISED,
-        WAITING_FOR_CREDENTIALS,
         READY_TO_CONNECT,//doesn't say if network exists or if credentials are correct. Attempt to connect to the network
         CONNECTING,
         WAITING_FOR_IP,//in between states, connected to the constructor but not been assigned an ip address
@@ -27,33 +37,36 @@ public:
         ERROR
     };
 
-    Wifi();
+    // constructors. Rule of 5.
+    Wifi(void);
+    ~Wifi(void)                     = default;
+    Wifi(const Wifi&)               = default;
+    Wifi(Wifi&&)                    = default;
+    Wifi& operator=(const Wifi&)    = default;
+    Wifi& operator=(Wifi&&)         = default;
+
     esp_err_t init(void); // set everything up
     esp_err_t begin(void); // start wifi, connect,etc
 
-    state_e get_state(void); //initialized, not initialized, connected, not, got ip address, not an ip address
-    const char* get_mac() 
-        {return mac_addr_cstr;}
-
-protected:
-    static SemaphoreHandle_t first_call_mutex;
-
-
+    constexpr const state_e& get_state(void) { return _state; }; //initialized, not initialized, connected, not, got ip address, not an ip address. return by reference so that we won't change the state.
+    constexpr static const char* get_mac() 
+        {return mac_addr_cstr;} // static because this function will always return the same thing, regardless of the instance I am in.
 
 private:
+    static esp_err_t _init(void);
     void state_machine(void);// internal machine
+    static void event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+    static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
+    static void ip_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data);
 
+    static wifi_init_config_t wifi_init_config;
+    static wifi_config_t wifi_config;
+    static state_e _state;
+    static std::mutex init_mutex; // making sure only one thread accesses the constructor at a time
+    static std::mutex connect_mutex; // only one thread should be connecting at a time, this mutex is making sure it's the case
+    static std::mutex state_mutex; // only one thread should change the value of state
     static char mac_addr_cstr[13];// all instances of this class share the same mac address.
-    esp_err_t _get_mac(void); // the user should NOT call this function directly
-
-    //static std::atomic_bool first_call; // std::atomic_bool means the boolean is atomic, meaning if a thread wants to change its value, it should first 
-    // get a lock, that's ensure that the critical section above is well protected.
-
-    //static SemaphoreHandle_t first_call_mutex; // pointer to the mutex or handle as free rtos calls it, memory getting allocated at runTime because it's on the 
-    //heap memory
-    static StaticSemaphore_t first_call_mutex_buffer;
-    static bool first_call;
-
+    static esp_err_t _get_mac(void); // the user should NOT call this function directly, and it is the same for all instances
 };
 
 }// namespace WIFI

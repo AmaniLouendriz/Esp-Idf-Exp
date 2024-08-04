@@ -1,113 +1,237 @@
 #include "Wifi.h"
 #include <esp_mac.h>
 #include <esp_log.h>
+#include <mutex>
 
 namespace WIFI
 {
 
-char Wifi::mac_addr_cstr[]{};
-
-//std::atomic_bool Wifi::first_call {false};
-
-SemaphoreHandle_t Wifi::first_call_mutex {nullptr};
-StaticSemaphore_t Wifi::first_call_mutex_buffer {};// default constructor, chunk of memory statically allocated at compile time
-
-bool Wifi::first_call {true};
+char                Wifi::mac_addr_cstr[] {};
+std::mutex          Wifi::init_mutex {};
+std::mutex          Wifi::connect_mutex {};
+std::mutex          Wifi::state_mutex {};
+Wifi::state_e       Wifi::_state {state_e::NOT_INITIALISED};
+wifi_init_config_t  Wifi::wifi_init_config = WIFI_INIT_CONFIG_DEFAULT(); // TODO whats wrong here
+wifi_config_t       Wifi::wifi_config {};
 
 Wifi::Wifi()
 {
-    if (!first_call_mutex) { // if the mutext doesn't exist, create it
-        //first_call_mutex = xSemaphoreCreateMutex(); // originally this mutex is on the heap memory, the semaphore is in a take state state
-        first_call_mutex = xSemaphoreCreateRecursiveMutexStatic(&first_call_mutex_buffer);// a recursive mutex ensures the following:
-        // ChildOfWifi
-        // {
+    // only one thread should get here at a time
+    std::lock_guard<std::mutex> guard(init_mutex);
 
-            // ...
-            // xSemaphoreTake(first_call_mutx,pDsecond);// child class of wifi took the semaphore
-            // Wifi(); // inside here, if it is the first call, the thread will try to acquire the semaphore, but it is already taken by itself, so it's gonna take
-            // it again (it's behaving like a counter semaphore with 2 permits), but when it will give it back, it should give it the number of times it took it
-            // so 2. if this wasn't a recursive semaphore, it wouldn't do that. it will block inside the base class constructor because we need the semaphore but we can't take
-            // it again bc we already have it.
-            // xSemaphoreGive(first_call_mutx);
-        
-        
-        
-        
-        
-        //}
-        configASSERT(first_call_mutex);
-        // if the thing inside ths assert is evaluated to false, espressif calls abort, but it gives you a trace on which line the problem happened
-        // first_call_mutex != nullptr (that's what the above means)
+    if (!get_mac()[0]) { // mac address is still they way we initialized it
+        if (ESP_OK != _get_mac()) {
+            esp_restart();
+        }
+    }// if not, then we already know mac address, no need to call again.
+}
 
-        configASSERT(pdPASS == xSemaphoreGive(first_call_mutex));
+void Wifi::event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+    if (WIFI_EVENT == event_base) {
+        return wifi_event_handler(arg,event_base,event_id,event_data);
     }
 
-    // There is a bug here, if it's our first call, and for some reason we can't obtain the semaphore, then we exit the function first without turning
-    // the first_call to false, and we don;t get any mac address. Depending on the number of times this constructor is executed, we may get different behaviors,
-    // and what the variable is  claiming to be first-call might not be!
-    // if (first_call && pdPASS == xSemaphoreTake(first_call_mutex,pdSECOND)) {
-    //     if (ESP_OK != _get_mac()) {
-    //         esp_restart(); // reboot the chip
-    //     }
-    //     first_call = false;
-    //     xSemaphoreGive(first_call_mutex);
-    // }
+    else if (IP_EVENT == event_base) {
+        return ip_event_handler(arg,event_base,event_id,event_data);
+    }
 
-    bool it_worked {false};
-    for (int i = 0; i<3 ; i++) { // max 3 times to acquire the semaphore
-        if (pdPASS == xSemaphoreTake(first_call_mutex,pdSECOND)) {
-            if (first_call) {
-                if (ESP_OK != _get_mac()) {
-                    esp_restart();
-                }
-                first_call = false;
+    else {
+        ESP_LOGE("myWIFI", "Unexpected event: %s", event_base);
+    }
+}
+
+void Wifi::wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+    if (WIFI_EVENT == event_base) {
+        const  wifi_event_t event_type {static_cast<wifi_event_t>(event_id)};
+
+        switch(event_type)
+        {
+            case WIFI_EVENT_STA_START:
+            {
+                std::lock_guard<std::mutex> state_guard(state_mutex);// recursive mutex??
+                _state = state_e::READY_TO_CONNECT;
+                break;
             }
-            xSemaphoreGive(first_call_mutex);
-            it_worked = true;
-            break;
-        } else {
-            // esp_restart();
-            ESP_LOGW("WIFI","Failed to get mutex (attempt %u)",i+1);
-            continue;
+            case WIFI_EVENT_STA_CONNECTED: // we are connected to the router, that doesn't mean is that the wifi is ready to use. because we don't have an ip yet. That doens't mean I have 
+            // internet or network access
+            {    std::lock_guard<std::mutex> state_guard(state_mutex);// recursive mutex??
+                _state = state_e::WAITING_FOR_IP;
+                break;
+            }
+            default:
+                break;
         }
     }
+}
 
-    if (!it_worked){
-        esp_restart();
+void Wifi::ip_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
+{
+    const  ip_event_t event_type {static_cast<ip_event_t>(event_id)};
+
+    switch(event_type)
+    {
+        case IP_EVENT_STA_GOT_IP:
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex);// recursive mutex??
+            _state = state_e::CONNECTED;
+            break;
+        }
+        case IP_EVENT_STA_LOST_IP:
+        {
+            std::lock_guard<std::mutex> state_guard(state_mutex);// recursive mutex??
+            _state = state_e::WAITING_FOR_IP;
+            break;
+        }
+        default:
+            break;
     }
-        
 }
 
 
-/* get_mac() is a method that uses the Espressif IDF to get the mac address of the chip
-*/
-esp_err_t Wifi::_get_mac()
-    {
-        // static char mac[13] {}; 
-        // we have 6 bytes, each  byte is worth 2 hex digits, so we need 12 hex digits, plus the null terminator. which is 13.
-        // important to make this static because the function returns a pointer to a char, if not static, once we leave the function, the memory is going to be 
-        // delocated for the variable mac, meaning if we want to access mac after the function returns, we would mainly get an undefined behavior. Making it static 
-        // means that we allocate the memory once, and it's going to be accessible through the code as a global variable, it is going to get destroyed when the program 
-        // ends. A bit heavy if used inside a loop but ofc it's better than undefined behavior.
 
-        // It's better to make this variable an attribute of the class, because it is expensive to check each and every time whether the memory for it has been 
-        // allocated before or not.
-    
-        uint8_t mac_byte_buffer[6] {};// espressif website says length should be 6. A mac is generally 6 bytes.
-        // the mac coming from the api is going to be put in this variable
+esp_err_t Wifi::init(void)
+{
+    return _init();
+}
 
-        const esp_err_t status { esp_efuse_mac_get_default(mac_byte_buffer)};// get the mac address from the idf
+esp_err_t Wifi::_init(void)
+{
+    // this is being called once and once per thread
+    std::lock_guard<std::mutex> init_guard(init_mutex);
+
+    esp_err_t status {ESP_OK};
+
+    std::lock_guard<std::mutex> state_guard(state_mutex);
+
+    if (state_e::NOT_INITIALISED == _state) {
+        // one time initialization
+        status = esp_netif_init();
+        if (ESP_OK == status) {
+            const esp_netif_t* const p_netif =  esp_netif_create_default_wifi_sta();
+
+            if (!p_netif) {
+                status = ESP_FAIL;
+            }
+        }
+        // default configuration for Wifi instance
+
+        if (ESP_OK == status)
+        {
+            status = esp_wifi_init(&wifi_init_config); // pass by address
+        }
+
+        if (ESP_OK == status)
+        {
+            status = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler,nullptr,nullptr);
+        }
+
+        if (ESP_OK == status)
+        {
+            status = esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &event_handler,nullptr,nullptr);
+        }
+
+        if (ESP_OK == status)
+        {
+            status = esp_wifi_set_mode(WIFI_MODE_STA);
+        }
+
+        if (ESP_OK == status)
+        {
+            // old C way
+            // wifi_config_t wifi_config = {
+            //     .sta = {// setting the wifi station
+            //         .ssid = EXAMPLE_ESP_WIFI_SSID,
+            //         .password = EXAMPLE_ESP_WIFI_PASS,
+            //         .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+
+            //         .pmf_cfg = {
+            //             .capable = true,
+            //             .required = false 
+            //         },
+            //     }
+            // }; // we are passing the stuff to the driver
+            const size_t ssid_length_to_copy {std::min(strlen(ssid),sizeof(wifi_config.sta.ssid))};
+            memcpy(wifi_config.sta.ssid,ssid,ssid_length_to_copy);
+            if (sizeof(wifi_config.sta.ssid) < strlen(ssid)) {
+                status = ESP_FAIL;
+            }
+            const size_t pwd_length_to_copy {std::min(strlen(password),sizeof(wifi_config.sta.ssid))};
+
+            memcpy(wifi_config.sta.password,password,pwd_length_to_copy);
+
+            wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+            wifi_config.sta.pmf_cfg.capable = true;
+            wifi_config.sta.pmf_cfg.required = false;
+            
+            status = esp_wifi_set_config(WIFI_IF_STA,&wifi_config); // pass by address, TODO: another param for the function is needed
+        }
 
         if (ESP_OK == status) {
-            snprintf(mac_addr_cstr,sizeof(mac_addr_cstr),"%02X%02X%02X%02X%02X%02X",
-                mac_byte_buffer[0],
-                mac_byte_buffer[1],
-                mac_byte_buffer[2],
-                mac_byte_buffer[3],
-                mac_byte_buffer[4],
-                mac_byte_buffer[5]);// format the mac coming from the api accordingly, by making sure every byte is output as a two digit hex.
+            status = esp_wifi_start();
         }
-        return status;
-    }// not calling this a lot because underlined data is unlikely to change
+
+        if (ESP_OK == status) {
+            _state = state_e::INITIALISED;
+        }
+
+    } else if(state_e::ERROR == _state)
+    {
+        status = ESP_FAIL;
+    }
+
+    return status;
+}
+
+esp_err_t Wifi::begin(void) 
+{
+    std::lock_guard<std::mutex> connect_guard(connect_mutex);
+    esp_err_t status {ESP_OK};
+    std::lock_guard<std::mutex> state_guard(state_mutex);
+
+    switch(_state)
+    {
+        case state_e::READY_TO_CONNECT:
+            status = esp_wifi_connect();
+
+            if (ESP_OK == status) {
+                _state = state_e::CONNECTING;
+            }
+            break;
+        case state_e::CONNECTING:
+        case state_e::WAITING_FOR_IP:
+        case state_e::CONNECTED:
+            break;
+        case state_e::NOT_INITIALISED:
+        case state_e::INITIALISED:
+        case state_e::DISCONNECTED:
+        case state_e::ERROR:
+            status =  ESP_FAIL;
+            break;
+    }
+
+    return status;
+
+}
+/* get_mac() is a method that uses the Espressif IDF to get the mac address of the chip, and it converts it to ASCII Hex c style string */
+esp_err_t Wifi::_get_mac()
+{    
+    uint8_t mac_byte_buffer[6] {};// A mac is generally 6 bytes.
+    // the mac coming from the api is going to be put in this variable
+
+    const esp_err_t status { esp_efuse_mac_get_default(mac_byte_buffer)};// get the mac address from the idf
+
+    if (ESP_OK == status) {
+        snprintf(mac_addr_cstr,sizeof(mac_addr_cstr),"%02X%02X%02X%02X%02X%02X",
+        mac_byte_buffer[0],
+        mac_byte_buffer[1],
+        mac_byte_buffer[2],
+        mac_byte_buffer[3],
+        mac_byte_buffer[4],
+        mac_byte_buffer[5]);// format the mac coming from the api accordingly, by making sure every byte is output as a two digit hex.
+    }
+    return status;
+}// not calling this a lot because underlined data is unlikely to change
 
 }// namespace WIFI

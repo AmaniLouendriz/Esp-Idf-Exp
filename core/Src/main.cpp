@@ -32,7 +32,6 @@ void Main::loop(void)
 extern "C" void app_main(void)
 {
     ESP_LOGI(LOG_TAG,"Creating default event loop");
-    // esp_event_loop_create_default();
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_LOGI(LOG_TAG,"Initializing NVS");// not sure if this flushes anything
 
