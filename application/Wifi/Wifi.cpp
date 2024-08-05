@@ -20,13 +20,14 @@ Wifi::Wifi()
     // only one thread should get here at a time
     std::lock_guard<std::mutex> guard(init_mutex);
 
-    if (!get_mac()[0]) { // mac address is still they way we initialized it
+    if (!get_mac()[0]) { // mac address is still the way we initialized it
         if (ESP_OK != _get_mac()) {
             esp_restart();
         }
     }// if not, then we already know mac address, no need to call again.
 }
 
+// esp_wifi_start calls event_handler, and it is sending it a WIFI_EVENT
 void Wifi::event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
     if (WIFI_EVENT == event_base) {
@@ -50,12 +51,12 @@ void Wifi::wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t ev
         const  wifi_event_t event_type {static_cast<wifi_event_t>(event_id)};
         ESP_LOGI(_log_tag, "%s:%d : Event ID %ld", __func__,__LINE__,event_id);
 
-
+        // in this switch, we would end up in state41 if the credentials of the wifi aren't valid.UPDATE: even if credentials are valid, first wifi event is always state 41.
         switch(event_type)
         {
             case WIFI_EVENT_STA_START:
             {
-                ESP_LOGI(_log_tag, "%s:%d : STA_START, waiting for state_mutex", __func__,__LINE__);
+                ESP_LOGI(_log_tag, "%s:%d : STA_START, waiting for state_mutex", __func__,__LINE__);// critical section because we are changing the state, there is a thread that makes a wifi event, if no guards, then we would end up with two threads modifying the same state variable, which is not what we want.
                 std::lock_guard<std::mutex> state_guard(state_mutex);// recursive mutex??
                 _state = state_e::READY_TO_CONNECT;
                 ESP_LOGI(_log_tag, "%s:%d : READY_TO_CONNECT", __func__,__LINE__);
@@ -184,13 +185,13 @@ esp_err_t Wifi::_init(void)
             wifi_config.sta.pmf_cfg.required = false;
             
             ESP_LOGI(_log_tag, "%s:%d : Calling esp_wifi_set_config", __func__,__LINE__);
-            status = esp_wifi_set_config(WIFI_IF_STA,&wifi_config); // pass by address, TODO: another param for the function is needed
+            status = esp_wifi_set_config(WIFI_IF_STA,&wifi_config); // pass by address
             ESP_LOGI(_log_tag, "%s:%d : esp_wifi_set_config:%s", __func__,__LINE__, esp_err_to_name(status));
         }
 
         if (ESP_OK == status) {
             ESP_LOGI(_log_tag, "%s:%d : Calling esp_wifi_start", __func__,__LINE__);
-            status = esp_wifi_start();// I am here
+            status = esp_wifi_start();// I am here, so there is a wifi event
             ESP_LOGI(_log_tag, "%s:%d : esp_wifi_start:%s", __func__,__LINE__, esp_err_to_name(status));
         }
 

@@ -6,7 +6,7 @@ namespace Gpio
     {
         esp_err_t status {ESP_OK};
 
-        status |= gpio_config(&_cfg);// why the  &_cfg
+        status |= gpio_config(&_cfg);// passing by adress, that's why we have the  &_cfg
 
         return status;
     }
@@ -23,19 +23,6 @@ namespace Gpio
     esp_err_t GpioOutput::set(const bool state)
     {
         _state = state;
-        // if (state && _inverted_logic) {
-        //     false
-        // } else if(state)
-        // {
-        //     true
-        // }
-        // if (!state && _inverted_logic) {
-        //     true
-        // } else if(!state)
-        // {
-        //     false
-        // }
-
         return gpio_set_level(_pin,_inverted_logic ? !state : state);
     }
 }

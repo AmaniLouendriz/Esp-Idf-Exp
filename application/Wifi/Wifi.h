@@ -23,6 +23,7 @@ class Wifi
     constexpr static const char* _log_tag {"WiFi"};
     constexpr static const char* ssid {"MyWifiSsid"};
     constexpr static const char* password{"MyWifiPassword"};
+
 public:
 
     enum class state_e
