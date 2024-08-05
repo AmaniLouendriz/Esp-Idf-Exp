@@ -21,8 +21,8 @@ namespace WIFI
 class Wifi
 {
     constexpr static const char* _log_tag {"WiFi"};
-    constexpr static const char* ssid {"MyWifiSsid"};
-    constexpr static const char* password{"MyWifiPassword"};
+    constexpr static const char* ssid {"HUAWEI Y9s"};
+    constexpr static const char* password{"22ac5f6da38e"};
 
 public:
 
@@ -50,7 +50,8 @@ public:
     esp_err_t init(void); // set everything up
     esp_err_t begin(void); // start wifi, connect,etc
 
-    constexpr const state_e& get_state(void) { return _state; }; //initialized, not initialized, connected, not, got ip address, not an ip address. return by reference so that we won't change the state.
+    // _state is static so get_state should be static too
+    constexpr static const state_e& get_state(void) { return _state; }; //initialized, not initialized, connected, not, got ip address, not an ip address. return by reference so that we won't change the state.
     constexpr static const char* get_mac() 
         {return mac_addr_cstr;} // static because this function will always return the same thing, regardless of the instance I am in.
 

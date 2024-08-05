@@ -11,14 +11,18 @@
 // including our custom headers
 #include "Gpio.h"
 #include "Wifi.h"
+#include "SntpTime.h"
 
 class Main final
 {
 public:
+    Main(void) :
+        sntp {SNTP::Sntp::get_instance()} {}
     esp_err_t setup(void);
     void loop(void);
 
     Gpio::GpioOutput led {GPIO_NUM_23,false};
     WIFI::Wifi wifi;
+    SNTP::Sntp& sntp;
 
 };
